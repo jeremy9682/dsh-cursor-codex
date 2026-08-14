@@ -9,7 +9,7 @@ Connect [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (`ds
 | [`skills/`](skills/) | Agent skills teaching Cursor and Codex when and how to delegate to dsh. |
 | [`templates/`](templates/) | Ready-made `mcp.json`, Cursor custom subagent, and Codex `dsh.config.toml` profiles. |
 | [`registry/`](registry/) | The `dsh-acp` entry (agent.json + icon) submitted to the official ACP registry. |
-| [`docs/`](docs/) | Channel-selection guide (EN/ZH) plus a [cookbook](docs/cookbook-integration-overlays.md) of battle-tested integration overlays (Codex as DSH subagent, third-party adapter → DeepSeek, port-3082 rehearsal). |
+| [`docs/`](docs/) | Channel-selection guide (EN/ZH) plus cookbooks for [integration overlays](docs/cookbook-integration-overlays.md) and [fleet governance](docs/cookbook-fleet-governance.md) (Codex as DSH subagent, third-party adapter → DeepSeek, port-3082 rehearsal). |
 
 ## Quick start
 
