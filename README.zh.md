@@ -9,6 +9,7 @@
 | [`skills/`](skills/) | 教 Cursor 和 Codex「何时、如何把活派给 dsh」的 agent skills。 |
 | [`templates/`](templates/) | 现成的 `mcp.json`、Cursor 自定义 subagent、Codex `dsh.config.toml` 配置模板。 |
 | [`registry/`](registry/) | 提交到官方 ACP registry 的 `dsh-acp` 条目（agent.json + 图标）。 |
+| [`docs/`](docs/) | 通道选型指南（中英）外加一份实战 overlay [cookbook](docs/cookbook-integration-overlays.zh.md)（Codex 当 DSH 子代理、第三方适配器接 DeepSeek、3082 端口排练）。 |
 
 ## 快速开始
 
