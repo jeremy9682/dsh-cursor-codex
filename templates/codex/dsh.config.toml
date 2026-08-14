@@ -1,0 +1,15 @@
+# DSH delegation profile for Codex.
+#
+# Install:  cp templates/codex/dsh.config.toml ~/.codex/dsh.config.toml
+# Use:      codex -p dsh "your task"        (-p is additive over config.toml)
+# or:       codex exec -p dsh "your task"
+#
+# This profile registers the dsh MCP server; the `dsh_delegate` tool then runs
+# `dsh --profile headless "<task>"` and returns the committed final answer.
+
+[mcp_servers.dsh]
+command = "node"
+args = ["/path/to/dsh-cursor-codex/server/dsh-mcp.mjs"]
+
+[mcp_servers.dsh.env]
+DSH_HOME = "~/.dsh"

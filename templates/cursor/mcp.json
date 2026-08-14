@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "dsh": {
+      "command": "node",
+      "args": ["/path/to/dsh-cursor-codex/server/dsh-mcp.mjs"],
+      "env": {
+        "DSH_HOME": "~/.dsh"
+      }
+    }
+  }
+}

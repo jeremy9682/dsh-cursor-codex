@@ -1,0 +1,27 @@
+# DSH ↔ Cursor/Codex — ACP bundle patch layer.
+#
+# Mounts the official ACP bridge (@deepseek-ai/dsh-acp) over the profile's
+# dsh-base composition, so the server shares $DSH_HOME credentials, model
+# settings, and session logs with `dsh web`. The demo app bundle is NOT used
+# here: it composes its own agent spine and would double-register
+# sessionPersistence on top of dsh-base.
+#
+# Install:
+#   dsh plugin --profile acp add @jeremy9682/dsh-acp
+#   dsh --profile acp              # ACP stdio server; stdout = JSON-RPC only
+#
+# Model/provider defaults are overridable per machine through the profile's
+# own cordis.patch.yml (an id-targeted patch replaces the whole config, so
+# restate fields you keep):
+#
+#   - id: acp-agent
+#     name: '@deepseek-ai/dsh-acp'
+#     config:
+#       provider: deepseek-official
+#       model: deepseek-v4-flash   # cheaper tier for mechanical delegation
+- insert:
+    - id: acp-agent
+      name: '@deepseek-ai/dsh-acp'
+      config:
+        provider: deepseek-official
+        model: deepseek-v4-pro

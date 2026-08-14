@@ -1,0 +1,17 @@
+{
+  "name": "dsh-cursor-codex",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Connect DeepSeek Harness (dsh) to Cursor and Codex: ACP agent bundle, MCP server, skills, and config templates.",
+  "license": "MIT",
+  "keywords": [
+    "deepseek",
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "cursor",
+    "codex",
+    "acp",
+    "mcp"
+  ]
+}
