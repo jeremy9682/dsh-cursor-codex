@@ -27,6 +27,9 @@ dsh plugin --profile acp add @jeremy9682/dsh-acp   # 一次性
 dsh --profile acp                                   # stdio ACP 服务
 ```
 
+npm 发布完成前，等价的本地安装方式是
+`dsh plugin --profile acp add file:/path/to/dsh-cursor-codex/acp`。
+
 Zed `settings.json`：
 
 ```json

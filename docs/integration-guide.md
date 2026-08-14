@@ -27,6 +27,9 @@ dsh plugin --profile acp add @jeremy9682/dsh-acp   # one-time
 dsh --profile acp                                   # stdio ACP server
 ```
 
+Until the npm publish lands, the equivalent local-checkout install is
+`dsh plugin --profile acp add file:/path/to/dsh-cursor-codex/acp`.
+
 Zed `settings.json`:
 
 ```json

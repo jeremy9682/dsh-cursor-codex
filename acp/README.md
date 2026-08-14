@@ -13,6 +13,12 @@ dsh plugin --profile acp add @jeremy9682/dsh-acp
 dsh --profile acp          # ACP stdio server; stdout = JSON-RPC only
 ```
 
+Before the npm publish lands, install from a local checkout of this repo:
+
+```sh
+dsh plugin --profile acp add file:/path/to/dsh-cursor-codex/acp
+```
+
 Or let the standalone entry provision and boot in one step:
 
 ```sh
@@ -27,7 +33,7 @@ The bundle defaults to `deepseek-v4-pro`. Override per machine in the profile's 
 
 ```yaml
 - id: acp-agent
-  name: '@deepseek-ai/dsh-acp-demo'
+  name: '@deepseek-ai/dsh-acp'
   config:
     provider: deepseek-official
     model: deepseek-v4-flash

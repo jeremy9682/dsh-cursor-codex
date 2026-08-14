@@ -19,6 +19,7 @@ npm install -g @deepseek-ai/dsh
 # 2a. ACP（Zed / JetBrains / 任意 ACP 客户端）
 dsh plugin --profile acp add @jeremy9682/dsh-acp
 dsh --profile acp
+#     （npm 发布前可用：`dsh plugin --profile acp add file:/path/to/dsh-cursor-codex/acp`）
 
 # 2b. MCP（Cursor / Codex）
 #   Cursor:  把 templates/cursor/mcp.json 合并进 ~/.cursor/mcp.json
