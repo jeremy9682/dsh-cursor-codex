@@ -43,6 +43,23 @@ function parseModels(session: unknown): CursorWireModel[] {
   return models
 }
 
+/**
+ * Classify a failed catalog probe. A live empty catalog keeps its explicit
+ * CURSOR_CATALOG_EMPTY failure — non-transient, so a stale last-good snapshot
+ * can never ride out a catalog that no longer offers any model. Every other
+ * failure maps to an unauthenticated result or a timeout/compatibility/
+ * transport error by evidence.
+ */
+export function probeFailureOutcome(error: unknown, stderr: string, probeTimedOut: boolean): Error | CursorProbeResult {
+  if (probeTimedOut) return new Error('CURSOR_TIMEOUT: Cursor ACP catalog probe timed out')
+  if (error instanceof Error && error.message.startsWith('CURSOR_CATALOG_EMPTY:')) return error
+  const evidence = `${error instanceof Error ? error.message : String(error)}\n${stderr}`.toLowerCase()
+  if (/auth|login|sign[ -]?in|credential/u.test(evidence)) return { authenticated: false, models: [] }
+  return new Error(/protocol|version/u.test(evidence)
+    ? 'INCOMPATIBLE_CURSOR_ACP: Cursor ACP catalog protocol failed'
+    : 'CURSOR_TRANSPORT: Cursor ACP catalog probe failed')
+}
+
 async function isolatedHome(root: string, hostHome: string): Promise<string> {
   const home = join(root, 'home')
   await mkdir(join(home, 'Library'), { recursive: true, mode: 0o700 })
@@ -130,12 +147,9 @@ export async function probeCursorCatalog(
     if (models.length === 0) throw new Error('CURSOR_CATALOG_EMPTY: Cursor ACP returned no models')
     return { authenticated: true, models }
   } catch (error: unknown) {
-    if (probeTimedOut) throw new Error('CURSOR_TIMEOUT: Cursor ACP catalog probe timed out')
-    const evidence = `${error instanceof Error ? error.message : String(error)}\n${stderr}`.toLowerCase()
-    if (/auth|login|sign[ -]?in|credential/u.test(evidence)) return { authenticated: false, models: [] }
-    throw new Error(/protocol|version/u.test(evidence)
-      ? 'INCOMPATIBLE_CURSOR_ACP: Cursor ACP catalog protocol failed'
-      : 'CURSOR_TRANSPORT: Cursor ACP catalog probe failed')
+    const outcome = probeFailureOutcome(error, stderr, probeTimedOut)
+    if (outcome instanceof Error) throw outcome
+    return outcome
   } finally {
     clearTimeout(deadline)
     signal?.removeEventListener('abort', abort)

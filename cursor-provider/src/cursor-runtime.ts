@@ -266,6 +266,37 @@ export function expectedMcpPermission(
     || toolCall.title === `${serverName}-${name}: ${name}`)
 }
 
+/**
+ * Cursor's Ask mode may select its own built-in Find/Read path. DSH text-only
+ * calls have no scheduler tools, so Ask remains appropriate for those calls.
+ * A normal DSH Agent Loop request exposes at least one MCP-backed tool and
+ * must use Agent mode so the model can keep executing through that bridge.
+ * Built-in Cursor tools remain independently fail-closed in sessionUpdate.
+ */
+export function cursorSessionMode(toolCount: number): 'ask' | 'agent' {
+  return toolCount === 0 ? 'ask' : 'agent'
+}
+
+interface CursorSessionConfigurator {
+  setSessionMode(value: { readonly sessionId: string; readonly modeId: string }): Promise<unknown>
+  setSessionConfigOption(value: {
+    readonly sessionId: string
+    readonly configId: string
+    readonly value: string
+  }): Promise<unknown>
+}
+
+/** Configure mode first so Cursor selects DSH MCP tools under Agent Loop requests. */
+export async function configureCursorSession(
+  connection: CursorSessionConfigurator,
+  sessionId: string,
+  toolCount: number,
+  wireModel: string,
+): Promise<void> {
+  await connection.setSessionMode({ sessionId, modeId: cursorSessionMode(toolCount) })
+  await connection.setSessionConfigOption({ sessionId, configId: 'model', value: wireModel })
+}
+
 function classifyFailure(error: unknown, stderr: string): Error {
   const message = `${error instanceof Error ? error.message : String(error)}\n${stderr}`.toLowerCase()
   if (/unauth|login|sign[ -]?in|credential/u.test(message)) return new Error('CURSOR_AUTH_REQUIRED: Cursor login is required or expired')
@@ -447,8 +478,7 @@ export async function runCursorGenericRuntime(
       }],
     })
     sessionId = session.sessionId
-    await connection.setSessionMode({ sessionId, modeId: 'ask' })
-    await connection.setSessionConfigOption({ sessionId, configId: 'model', value: options.wireModel })
+    await configureCursorSession(connection, sessionId, toolNames.size, options.wireModel)
     armPromptTimeout()
     const prompt = [start.instructions, start.task].filter(value => value !== undefined && value.trim().length > 0).join('\n\n')
     if (cancellation !== undefined) throw cancellation.reason

@@ -42,13 +42,16 @@ dsh plugin --profile web exec dsh-cursor-provider models --refresh
 dsh plugin --profile web exec dsh-cursor-provider doctor --json
 ```
 
-Health output contains only the CLI path/version, verified/required/unknown authentication state, sandbox/artifact compatibility, default availability, stable model IDs, and model names. It excludes credentials and account identity. Cached models remain advisory when health is unknown; starting a prompt always requires a successful live probe.
+Health output contains only the CLI path/version, verified/required/unknown authentication state, sandbox/artifact compatibility, default availability, stable model IDs, and model names. It excludes credentials and account identity. Every prompt forces a live catalog probe; only a transient transport/timeout failure may proceed on the last-good catalog entry for the exact selected model, while authentication, compatibility, cache, and sandbox failures — or a model the last-good catalog no longer offers — fail the prompt.
 
 If `cursor-agent` is not on PATH, configure its absolute official launcher path in the provider settings or pass `--command PATH` to the health CLI.
 
 ## Tool governance
 
 - Direct, title, and compaction calls are text-only.
+- Text-only calls use Cursor Ask mode. DSH Agent Loop calls that expose
+  scheduler tools use Cursor Agent mode so the model can keep selecting the
+  package-owned MCP bridge across tool steps.
 - DSH tools are exposed to Cursor only during a DSH Agent Loop request.
 - Cursor MCP `tools/call` becomes a standard DSH `tool-call`; DSH owns approval, execution, persistence, and logging.
 - The matching DSH `tool-result` resumes the same live Cursor ACP prompt.
@@ -73,7 +76,7 @@ pnpm build
 DSH_CURSOR_E2E=1 pnpm --filter @jeremy9682/dsh-llm-cursor-acp test:e2e
 ```
 
-The opt-in real suite uses the current Cursor subscription without separate API keys. It verifies native text streaming, a complete DSH Scheduler MCP round trip, Read/WebFetch cancellation, host-home Write denial, and Shell process-exec denial.
+The opt-in real suite uses the current Cursor subscription without separate API keys. It verifies native text streaming, a complete DSH Scheduler MCP round trip, Agent-mode built-in Read/Write/Shell/WebFetch/Find denial, and physical Seatbelt host-home Write plus process-exec checks.
 
 The provider pauses its own prompt deadline while a Cursor MCP call is suspended for DSH tool execution, and Agent Virtualization does not add a competing wall-clock deadline. Cursor's HTTP MCP client still has its own implementation limit (observed as `MCP error -32001: Request timed out`, roughly one minute in the admitted build); individual DSH tools must complete within that limit or Cursor receives the MCP timeout as a tool error.
 

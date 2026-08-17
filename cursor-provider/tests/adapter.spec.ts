@@ -1,3 +1,6 @@
+import { mkdtemp, readdir, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
@@ -45,11 +48,14 @@ afterEach(async () => {
   await Promise.all(contexts.splice(0).map(ctx => ctx.fiber.dispose()))
 })
 
-async function harness(): Promise<{ ctx: Context; adapter: CursorAcpAdapter }> {
+async function harness(
+  configGetter: () => CursorAdapterConfig = () => config,
+  refresh?: (force: boolean, signal?: AbortSignal, requireSuccess?: boolean) => Promise<void>,
+): Promise<{ ctx: Context; adapter: CursorAcpAdapter }> {
   const ctx = new Context()
   contexts.push(ctx)
   await ctx.plugin(LocalSubprocessRuntime)
-  const adapter = new CursorAcpAdapter(ctx, () => config)
+  const adapter = new CursorAcpAdapter(ctx, configGetter, refresh)
   return { ctx, adapter }
 }
 
@@ -65,6 +71,10 @@ async function collect(adapter: CursorAcpAdapter, options: GenerateOptions): Pro
   const chunks: StreamChunk[] = []
   for await (const chunk of adapter.stream(options)) chunks.push(chunk)
   return chunks
+}
+
+function liveBridges(adapter: CursorAcpAdapter): number {
+  return (adapter as unknown as { readonly live: Set<unknown> }).live.size
 }
 
 describe('Cursor ACP DSH adapter', () => {
@@ -212,5 +222,229 @@ describe('Cursor ACP DSH adapter', () => {
     expect(renderCursorTask(options, false)).toContain('This is a text-only call')
     expect(renderCursorTask(options, false)).toContain('USER id=')
     expect(renderCursorTask(options, true)).toContain('scheduled, approved, executed, and recorded')
+  })
+})
+
+describe('Cursor ACP catalog transient fallback', () => {
+  function transientRefresh(message: string): {
+    readonly calls: Array<{ force: boolean; signal?: AbortSignal | undefined; requireSuccess?: boolean | undefined }>
+    readonly refresh: (force: boolean, signal?: AbortSignal, requireSuccess?: boolean) => Promise<void>
+  } {
+    const calls: Array<{ force: boolean; signal?: AbortSignal | undefined; requireSuccess?: boolean | undefined }> = []
+    return {
+      calls,
+      refresh: async (force, signal, requireSuccess) => {
+        calls.push({ force, signal, requireSuccess })
+        throw new Error(message)
+      },
+    }
+  }
+
+  async function harnessWithRefresh(
+    message: string,
+    configGetter: () => CursorAdapterConfig = () => config,
+  ): Promise<{ calls: Array<{ force: boolean; signal?: AbortSignal | undefined; requireSuccess?: boolean | undefined }>; adapter: CursorAcpAdapter }> {
+    const { calls, refresh } = transientRefresh(message)
+    const { adapter } = await harness(configGetter, refresh)
+    return { calls, adapter }
+  }
+
+  it('proceeds to the bridge on transient refresh failures when last-good serves the exact model', async () => {
+    for (const message of ['CURSOR_TRANSPORT: catalog probe failed', 'CURSOR_TIMEOUT: catalog probe timed out']) {
+      const { calls, adapter } = await harnessWithRefresh(message)
+      const chunks = await collect(adapter, baseOptions())
+      expect(chunks.filter(chunk => chunk.type === 'text-delta').map(chunk => chunk.text).join('')).toContain('cursor-text')
+      expect(chunks.at(-1)).toEqual({ type: 'finish', reason: { kind: 'stop' } })
+      expect(calls).toEqual([{ force: true, signal: undefined, requireSuccess: true }])
+      await adapter.dispose()
+    }
+  })
+
+  it('fails a transient first refresh with no last-good catalog', async () => {
+    const { adapter } = await harnessWithRefresh('CURSOR_TRANSPORT: catalog probe failed', () => ({ ...config, models: [] }))
+    await expect(collect(adapter, baseOptions())).rejects.toThrow('CURSOR_TRANSPORT: catalog probe failed')
+    await adapter.dispose()
+  })
+
+  it('still fails auth, compatibility, cache, and sandbox refresh errors with last-good present', async () => {
+    for (const message of [
+      'CURSOR_AUTH_REQUIRED: Cursor login is required or expired',
+      'INCOMPATIBLE_CURSOR_ACP: catalog protocol failed',
+      'CURSOR_CACHE_INVALID: ignored invalid Cursor catalog cache',
+      'SANDBOX_UNAVAILABLE: Cursor catalog probe requires macOS Seatbelt',
+    ]) {
+      const { adapter } = await harnessWithRefresh(message)
+      await expect(collect(adapter, baseOptions())).rejects.toThrow(message)
+      await adapter.dispose()
+    }
+  })
+
+  it('fails a live empty catalog instead of serving established last-good', async () => {
+    const { adapter } = await harnessWithRefresh('CURSOR_CATALOG_EMPTY: Cursor ACP returned no models')
+    await expect(collect(adapter, baseOptions())).rejects.toThrow('CURSOR_CATALOG_EMPTY: Cursor ACP returned no models')
+    expect(liveBridges(adapter)).toBe(0)
+    await adapter.dispose()
+  })
+
+  it('fails transient-looking refresh failures caused by caller cancellation', async () => {
+    const controller = new AbortController()
+    const refresh = async (): Promise<void> => {
+      controller.abort(new Error('caller cancelled'))
+      throw new Error('CURSOR_TIMEOUT: catalog probe timed out')
+    }
+    const { adapter } = await harness(() => config, refresh)
+    await expect(collect(adapter, { ...baseOptions(), signal: controller.signal })).rejects.toThrow('CURSOR_TIMEOUT: catalog probe timed out')
+    await adapter.dispose()
+  })
+
+  it('fails an unknown model during a transient refresh', async () => {
+    const { adapter } = await harnessWithRefresh('CURSOR_TRANSPORT: catalog probe failed')
+    await expect(collect(adapter, { ...baseOptions(), model: 'cursor-mock-ghost' })).rejects.toThrow('CURSOR_TRANSPORT: catalog probe failed')
+    await adapter.dispose()
+  })
+
+  it('fails a tombstoned model during a transient refresh', async () => {
+    const removed = { ...config.models[0]!, id: 'cursor-old-high', name: 'Cursor Old High' }
+    const { adapter } = await harnessWithRefresh(
+      'CURSOR_TRANSPORT: catalog probe failed',
+      () => ({ ...config, models: [config.models[1]!], tombstones: [removed] }),
+    )
+    await expect(collect(adapter, { ...baseOptions(), model: 'cursor-old-high' })).rejects.toThrow('CURSOR_TRANSPORT: catalog probe failed')
+    await adapter.dispose()
+  })
+})
+
+describe('Cursor ACP deferred catalog refresh races', () => {
+  function deferredSuccessfulRefresh(): {
+    readonly started: Promise<void>
+    readonly resolveRefresh: () => void
+    readonly refresh: (force: boolean, signal?: AbortSignal, requireSuccess?: boolean) => Promise<void>
+  } {
+    let resolveGate = (): void => {}
+    const gate = new Promise<void>(resolve => { resolveGate = resolve })
+    let resolveStarted = (): void => {}
+    const started = new Promise<void>(resolve => { resolveStarted = resolve })
+    return {
+      started,
+      resolveRefresh: () => resolveGate(),
+      refresh: async (): Promise<void> => {
+        resolveStarted()
+        await gate
+      },
+    }
+  }
+
+  it('fails before config, model, or bridge when disposal lands during a successful refresh', async () => {
+    const { started, resolveRefresh, refresh } = deferredSuccessfulRefresh()
+    const { adapter } = await harness(() => config, refresh)
+    const pending = collect(adapter, baseOptions())
+    await started
+    const disposed = adapter.dispose()
+    resolveRefresh()
+    await expect(pending).rejects.toMatchObject({ code: 'TRANSPORT', message: 'Cursor ACP adapter is disposing' })
+    expect(liveBridges(adapter)).toBe(0)
+    await disposed
+  })
+
+  it('fails before config, model, or bridge when the caller aborts during a successful refresh', async () => {
+    const { started, resolveRefresh, refresh } = deferredSuccessfulRefresh()
+    const { adapter } = await harness(() => config, refresh)
+    const controller = new AbortController()
+    const pending = collect(adapter, { ...baseOptions(), signal: controller.signal })
+    await started
+    controller.abort(new Error('caller cancelled'))
+    resolveRefresh()
+    await expect(pending).rejects.toMatchObject({ code: 'ABORTED', message: 'Cursor request aborted' })
+    expect(liveBridges(adapter)).toBe(0)
+    await adapter.dispose()
+  })
+})
+
+describe('Cursor ACP startBridge lifecycle races', () => {
+  function countSpawns(ctx: Context): () => number {
+    const service = (ctx as unknown as { subprocess: { spawn: (...args: never[]) => unknown } }).subprocess
+    const realSpawn = service.spawn.bind(service)
+    let spawnCount = 0
+    service.spawn = (...args: never[]) => {
+      spawnCount += 1
+      return realSpawn(...args)
+    }
+    return () => spawnCount
+  }
+
+  /** Give the adapter's mkdtemp an otherwise-empty tmpdir so leftovers are attributable. */
+  async function withIsolatedTmpdir(run: (root: string) => Promise<void>): Promise<void> {
+    const previous = process.env.TMPDIR
+    const root = await mkdtemp(join(tmpdir(), 'dsh-cursor-gap-spec-'))
+    process.env.TMPDIR = root
+    try {
+      await run(root)
+    } finally {
+      if (previous === undefined) delete process.env.TMPDIR
+      else process.env.TMPDIR = previous
+      await rm(root, { recursive: true, force: true })
+    }
+  }
+
+  async function leftoverBridgeRoots(root: string): Promise<readonly string[]> {
+    const entries = await readdir(root)
+    return entries.filter(name => name.startsWith('dsh-cursor-provider-'))
+  }
+
+  it('fails without spawning when disposal lands during the startBridge mkdtemp await', async () => {
+    await withIsolatedTmpdir(async root => {
+      let adapter: CursorAcpAdapter | undefined
+      const { ctx, adapter: created } = await harness(() => {
+        queueMicrotask(() => { void adapter?.dispose() })
+        return config
+      })
+      adapter = created
+      const spawnCount = countSpawns(ctx)
+      await expect(collect(adapter, baseOptions())).rejects.toMatchObject({ code: 'TRANSPORT', message: 'Cursor ACP adapter is disposing' })
+      expect(spawnCount()).toBe(0)
+      expect(liveBridges(adapter)).toBe(0)
+      expect(await leftoverBridgeRoots(root)).toEqual([])
+    })
+  })
+
+  it('fails without spawning when the caller aborts during the startBridge mkdtemp await', async () => {
+    await withIsolatedTmpdir(async root => {
+      const controller = new AbortController()
+      const { ctx, adapter } = await harness(() => {
+        queueMicrotask(() => { controller.abort(new Error('caller cancelled')) })
+        return config
+      })
+      const spawnCount = countSpawns(ctx)
+      await expect(collect(adapter, { ...baseOptions(), signal: controller.signal })).rejects.toMatchObject({ code: 'ABORTED', message: 'Cursor request aborted' })
+      expect(spawnCount()).toBe(0)
+      expect(liveBridges(adapter)).toBe(0)
+      expect(await leftoverBridgeRoots(root)).toEqual([])
+    })
+  })
+
+  it('fails without spawning when the catalog delists the model during the startBridge mkdtemp await', async () => {
+    await withIsolatedTmpdir(async root => {
+      let delisted = false
+      const selected = config.models[0]!
+      const { ctx, adapter } = await harness(() => {
+        queueMicrotask(() => { delisted = true })
+        return delisted
+          ? { ...config, models: [config.models[1]!], tombstones: [selected] }
+          : config
+      })
+      const spawns: string[][] = []
+      const service = (ctx as unknown as { subprocess: { spawn: (...args: never[]) => unknown } }).subprocess
+      const realSpawn = service.spawn.bind(service)
+      service.spawn = (...args: never[]) => {
+        spawns.push([...(args[0] as unknown as { argv: readonly string[] }).argv])
+        return realSpawn(...args)
+      }
+      await expect(collect(adapter, { ...baseOptions(), model: selected.id }))
+        .rejects.toMatchObject({ code: 'UNKNOWN_MODEL', message: 'Cursor no longer offers model "cursor-mock-high"' })
+      expect(spawns).toEqual([])
+      expect(liveBridges(adapter)).toBe(0)
+      expect(await leftoverBridgeRoots(root)).toEqual([])
+      await adapter.dispose()
+    })
   })
 })

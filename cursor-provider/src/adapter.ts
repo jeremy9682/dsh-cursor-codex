@@ -101,6 +101,16 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
+const TRANSIENT_CATALOG_ERROR = /^CURSOR_(TRANSPORT|TIMEOUT):/u
+
+/**
+ * A catalog error a last-good snapshot can ride out. Auth, compatibility,
+ * cache, and sandbox failures stay fatal regardless of cached state.
+ */
+function isTransientCatalogError(error: unknown): boolean {
+  return error instanceof Error && TRANSIENT_CATALOG_ERROR.test(error.message)
+}
+
 function runtimeLlmError(message: string): LlmError {
   const code = /^([A-Z][A-Z0-9_]+):/u.exec(message)?.[1]
   return new LlmError(message, code ?? 'PROVIDER')
@@ -152,16 +162,15 @@ export class CursorAcpAdapter extends LlmAdapter {
   override async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
     if (this.disposing) throw new LlmError('Cursor ACP adapter is disposing', 'TRANSPORT')
     if (options.provider !== CURSOR_ACP_PROVIDER) throw new LlmError(`unexpected provider ${JSON.stringify(options.provider)}`, 'PROVIDER')
-    await this.refresh?.(true, options.signal, true)
+    await this.refreshCatalogForRun(options)
     let config = this.config()
     let model = this.resolveConfiguredModel(options.model, config)
-    if (!config.models.some(candidate => candidate.id === model.id)) {
+    if (!this.modelOffered(model, config)) {
       await this.refresh?.(true, options.signal, true)
+      this.assertRunLive(options)
       config = this.config()
       model = this.resolveConfiguredModel(options.model, config)
-      if (!config.models.some(candidate => candidate.id === model.id)) {
-        throw new LlmError(`Cursor no longer offers model ${JSON.stringify(options.model)}`, 'UNKNOWN_MODEL')
-      }
+      if (!this.modelOffered(model, config)) throw this.modelUnavailable(options.model)
     }
     const agentLoop = isAgentLoopRequest(options)
     const key = bridgeKey(options)
@@ -347,6 +356,47 @@ export class CursorAcpAdapter extends LlmAdapter {
       .map(([, bridge]) => this.closeBridge(bridge, 'DSH session disposed')))
   }
 
+  /**
+   * Forced pre-run catalog refresh. A transient transport or timeout failure
+   * falls back to the last-good catalog only when it still offers the exact
+   * requested stable model; every other failure, an aborted caller, a disposed
+   * adapter, and any model outside the current catalog stay fatal. A refresh
+   * that resolves after disposal or caller abort is equally fatal — a stale
+   * stream must never reach config resolution or start a bridge.
+   */
+  private async refreshCatalogForRun(options: GenerateOptions): Promise<void> {
+    try {
+      await this.refresh?.(true, options.signal, true)
+    } catch (error: unknown) {
+      if (this.disposing || options.signal?.aborted === true || !isTransientCatalogError(error)) throw error
+      const config = this.config()
+      let model: CursorRuntimeModel
+      try {
+        model = this.resolveConfiguredModel(options.model, config)
+      } catch {
+        throw error
+      }
+      if (!config.models.some(candidate => candidate.id === model.id)) throw error
+    }
+    this.assertRunLive(options)
+  }
+
+  /** Fail a run that outlived its adapter or caller, before any bridge side effect. */
+  private assertRunLive(options: GenerateOptions): void {
+    if (this.disposing) throw new LlmError('Cursor ACP adapter is disposing', 'TRANSPORT')
+    if (options.signal?.aborted === true) throw new LlmError('Cursor request aborted', 'ABORTED')
+  }
+
+  /** True when the catalog snapshot still offers the exact resolved model. */
+  private modelOffered(model: CursorRuntimeModel, config: CursorAdapterConfig): boolean {
+    return config.models.some(candidate => candidate.id === model.id)
+  }
+
+  /** The exact-availability failure shared by the pre-run and launch-time checks. */
+  private modelUnavailable(modelId: string): LlmError {
+    return new LlmError(`Cursor no longer offers model ${JSON.stringify(modelId)}`, 'UNKNOWN_MODEL')
+  }
+
   private resolveConfiguredModel(modelId: string, config = this.config()): CursorRuntimeModel {
     const model = [...config.models, ...config.tombstones].find(candidate => candidate.id === modelId)
     if (model === undefined) throw new LlmError(`unknown Cursor ACP model ${JSON.stringify(modelId)}`, 'UNKNOWN_MODEL')
@@ -360,6 +410,17 @@ export class CursorAcpAdapter extends LlmAdapter {
     config: CursorAdapterConfig,
   ): Promise<ActiveBridge> {
     const privateRoot = await mkdtemp(join(tmpdir(), 'dsh-cursor-provider-'))
+    // The mkdtemp await can outlive the adapter, the caller, or the catalog's
+    // offer of the exact model; fail closed against the current catalog before
+    // any spawn side effect and drop the fresh private root. Both checks are
+    // synchronous, so nothing asynchronous separates them from the spawn.
+    try {
+      this.assertRunLive(options)
+      if (!this.modelOffered(model, this.config())) throw this.modelUnavailable(options.model)
+    } catch (error: unknown) {
+      await rm(privateRoot, { recursive: true, force: true })
+      throw error
+    }
     const abort = new AbortController()
     const process = this.ctx.subprocess.spawn({
       argv: [config.bridgeCommand, ...config.bridgeArgs, 'model', '--config', model.configPath],

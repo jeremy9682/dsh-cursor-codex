@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { attributionHeaders } from '@deepseek-ai/dsh-llm'
-import { buildCursorAcpArguments, cursorSeatbeltProfile, expectedMcpPermission, isCursorLaunchVerified, isCursorVersionVerified, resolveCursorLaunch } from '../src/cursor-runtime.js'
+import { buildCursorAcpArguments, configureCursorSession, cursorSeatbeltProfile, cursorSessionMode, expectedMcpPermission, isCursorLaunchVerified, isCursorVersionVerified, resolveCursorLaunch } from '../src/cursor-runtime.js'
 import { CLI_ATTRIBUTION_HEADERS } from '../src/cli.js'
 import { parseRuntimeArguments } from '../src/runtime-bin.js'
 import { encodeCursorControl, parseCursorControl } from '../src/control-event.js'
@@ -13,6 +13,25 @@ const roots: string[] = []
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
 
 describe('Cursor ACP runtime boundary', () => {
+  it('uses agent mode only when the DSH Agent Loop exposes scheduler tools', () => {
+    expect(cursorSessionMode(0)).toBe('ask')
+    expect(cursorSessionMode(1)).toBe('agent')
+    expect(cursorSessionMode(12)).toBe('agent')
+  })
+
+  it('configures the ACP session mode before selecting the Cursor model', async () => {
+    const calls: unknown[] = []
+    const connection = {
+      async setSessionMode(value: unknown) { calls.push(['mode', value]) },
+      async setSessionConfigOption(value: unknown) { calls.push(['model', value]) },
+    }
+    await configureCursorSession(connection, 'session-1', 4, 'grok-4.6[effort=high]')
+    expect(calls).toEqual([
+      ['mode', { sessionId: 'session-1', modeId: 'agent' }],
+      ['model', { sessionId: 'session-1', configId: 'model', value: 'grok-4.6[effort=high]' }],
+    ])
+  })
+
   it('injects mandatory DSH attribution with Cursor supported headers', () => {
     const headers = attributionHeaders()
     expect(CLI_ATTRIBUTION_HEADERS).toEqual(headers)
