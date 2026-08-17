@@ -167,6 +167,7 @@ export class CursorAcpAdapter extends LlmAdapter {
     let model = this.resolveConfiguredModel(options.model, config)
     if (!config.models.some(candidate => candidate.id === model.id)) {
       await this.refresh?.(true, options.signal, true)
+      this.assertRunLive(options)
       config = this.config()
       model = this.resolveConfiguredModel(options.model, config)
       if (!config.models.some(candidate => candidate.id === model.id)) {
@@ -361,7 +362,9 @@ export class CursorAcpAdapter extends LlmAdapter {
    * Forced pre-run catalog refresh. A transient transport or timeout failure
    * falls back to the last-good catalog only when it still offers the exact
    * requested stable model; every other failure, an aborted caller, a disposed
-   * adapter, and any model outside the current catalog stay fatal.
+   * adapter, and any model outside the current catalog stay fatal. A refresh
+   * that resolves after disposal or caller abort is equally fatal — a stale
+   * stream must never reach config resolution or start a bridge.
    */
   private async refreshCatalogForRun(options: GenerateOptions): Promise<void> {
     try {
@@ -377,6 +380,13 @@ export class CursorAcpAdapter extends LlmAdapter {
       }
       if (!config.models.some(candidate => candidate.id === model.id)) throw error
     }
+    this.assertRunLive(options)
+  }
+
+  /** Fail a run that outlived its adapter or caller, before any bridge side effect. */
+  private assertRunLive(options: GenerateOptions): void {
+    if (this.disposing) throw new LlmError('Cursor ACP adapter is disposing', 'TRANSPORT')
+    if (options.signal?.aborted === true) throw new LlmError('Cursor request aborted', 'ABORTED')
   }
 
   private resolveConfiguredModel(modelId: string, config = this.config()): CursorRuntimeModel {

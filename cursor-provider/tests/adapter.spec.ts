@@ -70,6 +70,10 @@ async function collect(adapter: CursorAcpAdapter, options: GenerateOptions): Pro
   return chunks
 }
 
+function liveBridges(adapter: CursorAcpAdapter): number {
+  return (adapter as unknown as { readonly live: Set<unknown> }).live.size
+}
+
 describe('Cursor ACP DSH adapter', () => {
   it('streams indexed reasoning and text blocks with exactly one finish', async () => {
     const { adapter } = await harness()
@@ -272,6 +276,13 @@ describe('Cursor ACP catalog transient fallback', () => {
     }
   })
 
+  it('fails a live empty catalog instead of serving established last-good', async () => {
+    const { adapter } = await harnessWithRefresh('CURSOR_CATALOG_EMPTY: Cursor ACP returned no models')
+    await expect(collect(adapter, baseOptions())).rejects.toThrow('CURSOR_CATALOG_EMPTY: Cursor ACP returned no models')
+    expect(liveBridges(adapter)).toBe(0)
+    await adapter.dispose()
+  })
+
   it('fails transient-looking refresh failures caused by caller cancellation', async () => {
     const controller = new AbortController()
     const refresh = async (): Promise<void> => {
@@ -296,6 +307,52 @@ describe('Cursor ACP catalog transient fallback', () => {
       () => ({ ...config, models: [config.models[1]!], tombstones: [removed] }),
     )
     await expect(collect(adapter, { ...baseOptions(), model: 'cursor-old-high' })).rejects.toThrow('CURSOR_TRANSPORT: catalog probe failed')
+    await adapter.dispose()
+  })
+})
+
+describe('Cursor ACP deferred catalog refresh races', () => {
+  function deferredSuccessfulRefresh(): {
+    readonly started: Promise<void>
+    readonly resolveRefresh: () => void
+    readonly refresh: (force: boolean, signal?: AbortSignal, requireSuccess?: boolean) => Promise<void>
+  } {
+    let resolveGate = (): void => {}
+    const gate = new Promise<void>(resolve => { resolveGate = resolve })
+    let resolveStarted = (): void => {}
+    const started = new Promise<void>(resolve => { resolveStarted = resolve })
+    return {
+      started,
+      resolveRefresh: () => resolveGate(),
+      refresh: async (): Promise<void> => {
+        resolveStarted()
+        await gate
+      },
+    }
+  }
+
+  it('fails before config, model, or bridge when disposal lands during a successful refresh', async () => {
+    const { started, resolveRefresh, refresh } = deferredSuccessfulRefresh()
+    const { adapter } = await harness(() => config, refresh)
+    const pending = collect(adapter, baseOptions())
+    await started
+    const disposed = adapter.dispose()
+    resolveRefresh()
+    await expect(pending).rejects.toMatchObject({ code: 'TRANSPORT', message: 'Cursor ACP adapter is disposing' })
+    expect(liveBridges(adapter)).toBe(0)
+    await disposed
+  })
+
+  it('fails before config, model, or bridge when the caller aborts during a successful refresh', async () => {
+    const { started, resolveRefresh, refresh } = deferredSuccessfulRefresh()
+    const { adapter } = await harness(() => config, refresh)
+    const controller = new AbortController()
+    const pending = collect(adapter, { ...baseOptions(), signal: controller.signal })
+    await started
+    controller.abort(new Error('caller cancelled'))
+    resolveRefresh()
+    await expect(pending).rejects.toMatchObject({ code: 'ABORTED', message: 'Cursor request aborted' })
+    expect(liveBridges(adapter)).toBe(0)
     await adapter.dispose()
   })
 })
