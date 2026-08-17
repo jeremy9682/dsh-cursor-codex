@@ -165,14 +165,12 @@ export class CursorAcpAdapter extends LlmAdapter {
     await this.refreshCatalogForRun(options)
     let config = this.config()
     let model = this.resolveConfiguredModel(options.model, config)
-    if (!config.models.some(candidate => candidate.id === model.id)) {
+    if (!this.modelOffered(model, config)) {
       await this.refresh?.(true, options.signal, true)
       this.assertRunLive(options)
       config = this.config()
       model = this.resolveConfiguredModel(options.model, config)
-      if (!config.models.some(candidate => candidate.id === model.id)) {
-        throw new LlmError(`Cursor no longer offers model ${JSON.stringify(options.model)}`, 'UNKNOWN_MODEL')
-      }
+      if (!this.modelOffered(model, config)) throw this.modelUnavailable(options.model)
     }
     const agentLoop = isAgentLoopRequest(options)
     const key = bridgeKey(options)
@@ -389,6 +387,16 @@ export class CursorAcpAdapter extends LlmAdapter {
     if (options.signal?.aborted === true) throw new LlmError('Cursor request aborted', 'ABORTED')
   }
 
+  /** True when the catalog snapshot still offers the exact resolved model. */
+  private modelOffered(model: CursorRuntimeModel, config: CursorAdapterConfig): boolean {
+    return config.models.some(candidate => candidate.id === model.id)
+  }
+
+  /** The exact-availability failure shared by the pre-run and launch-time checks. */
+  private modelUnavailable(modelId: string): LlmError {
+    return new LlmError(`Cursor no longer offers model ${JSON.stringify(modelId)}`, 'UNKNOWN_MODEL')
+  }
+
   private resolveConfiguredModel(modelId: string, config = this.config()): CursorRuntimeModel {
     const model = [...config.models, ...config.tombstones].find(candidate => candidate.id === modelId)
     if (model === undefined) throw new LlmError(`unknown Cursor ACP model ${JSON.stringify(modelId)}`, 'UNKNOWN_MODEL')
@@ -402,10 +410,13 @@ export class CursorAcpAdapter extends LlmAdapter {
     config: CursorAdapterConfig,
   ): Promise<ActiveBridge> {
     const privateRoot = await mkdtemp(join(tmpdir(), 'dsh-cursor-provider-'))
-    // The mkdtemp await can outlive the adapter or caller; fail closed before
-    // any spawn side effect and drop the fresh private root.
+    // The mkdtemp await can outlive the adapter, the caller, or the catalog's
+    // offer of the exact model; fail closed against the current catalog before
+    // any spawn side effect and drop the fresh private root. Both checks are
+    // synchronous, so nothing asynchronous separates them from the spawn.
     try {
       this.assertRunLive(options)
+      if (!this.modelOffered(model, this.config())) throw this.modelUnavailable(options.model)
     } catch (error: unknown) {
       await rm(privateRoot, { recursive: true, force: true })
       throw error

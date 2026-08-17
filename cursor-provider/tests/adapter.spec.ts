@@ -421,4 +421,30 @@ describe('Cursor ACP startBridge lifecycle races', () => {
       expect(await leftoverBridgeRoots(root)).toEqual([])
     })
   })
+
+  it('fails without spawning when the catalog delists the model during the startBridge mkdtemp await', async () => {
+    await withIsolatedTmpdir(async root => {
+      let delisted = false
+      const selected = config.models[0]!
+      const { ctx, adapter } = await harness(() => {
+        queueMicrotask(() => { delisted = true })
+        return delisted
+          ? { ...config, models: [config.models[1]!], tombstones: [selected] }
+          : config
+      })
+      const spawns: string[][] = []
+      const service = (ctx as unknown as { subprocess: { spawn: (...args: never[]) => unknown } }).subprocess
+      const realSpawn = service.spawn.bind(service)
+      service.spawn = (...args: never[]) => {
+        spawns.push([...(args[0] as unknown as { argv: readonly string[] }).argv])
+        return realSpawn(...args)
+      }
+      await expect(collect(adapter, { ...baseOptions(), model: selected.id }))
+        .rejects.toMatchObject({ code: 'UNKNOWN_MODEL', message: 'Cursor no longer offers model "cursor-mock-high"' })
+      expect(spawns).toEqual([])
+      expect(liveBridges(adapter)).toBe(0)
+      expect(await leftoverBridgeRoots(root)).toEqual([])
+      await adapter.dispose()
+    })
+  })
 })
