@@ -311,7 +311,13 @@ export async function runCursorGenericRuntime(
     sendChain = sendChain.then(() => jsonLine(output, value))
     return sendChain
   }
-  const broker = new GenericToolBroker(send)
+  // A suspension (tool.call out, awaiting DSH tool.result) must not consume
+  // the prompt deadline: the wall clock only runs while Cursor is actively
+  // generating. Resume re-arms a fresh full window.
+  const broker = new GenericToolBroker(async message => {
+    if (timeout !== undefined) clearTimeout(timeout)
+    await send(message)
+  })
   const bridge = new HttpMcpBridge(start.capabilities as readonly McpToolDefinition[], broker, options.maxMcpBodyBytes)
   const privateRoot = process.env.HOME === undefined ? process.cwd() : dirname(process.env.HOME)
   await mkdir(join(privateRoot, 'tmp'), { recursive: true, mode: 0o700 })
@@ -392,13 +398,23 @@ export async function runCursorGenericRuntime(
   )
   const lines = createInterface({ input, crlfDelay: Infinity })
   let timeout: NodeJS.Timeout | undefined
+  const armPromptTimeout = (): void => {
+    if (timeout !== undefined) clearTimeout(timeout)
+    if (turnFinished || cancellation !== undefined) return
+    timeout = setTimeout(() => {
+      void beginCancellation('timeout', new Error('CURSOR_TIMEOUT: Cursor prompt timed out'))
+    }, options.promptTimeoutMs)
+  }
   const inputLoop = (async () => {
     try {
       for await (const line of lines) {
         if (line.trim().length === 0) continue
         const message: unknown = JSON.parse(line)
         if (!isRecord(message)) throw new Error('invalid generic runtime input')
-        if (message.type === 'tool.result') broker.resolve(message as unknown as GenericToolResult)
+        if (message.type === 'tool.result') {
+          armPromptTimeout()
+          broker.resolve(message as unknown as GenericToolResult)
+        }
         else if (message.type === 'run.cancel') {
           await beginCancellation('explicit', new Error('CURSOR_CANCELLED: Cursor request cancelled'))
         } else throw new Error(`unexpected generic runtime input ${String(message.type)}`)
@@ -433,9 +449,7 @@ export async function runCursorGenericRuntime(
     sessionId = session.sessionId
     await connection.setSessionMode({ sessionId, modeId: 'ask' })
     await connection.setSessionConfigOption({ sessionId, configId: 'model', value: options.wireModel })
-    timeout = setTimeout(() => {
-      void beginCancellation('timeout', new Error('CURSOR_TIMEOUT: Cursor prompt timed out'))
-    }, options.promptTimeoutMs)
+    armPromptTimeout()
     const prompt = [start.instructions, start.task].filter(value => value !== undefined && value.trim().length > 0).join('\n\n')
     if (cancellation !== undefined) throw cancellation.reason
     const promptResult = connection.prompt({ sessionId, prompt: [{ type: 'text', text: prompt }] })
