@@ -402,6 +402,14 @@ export class CursorAcpAdapter extends LlmAdapter {
     config: CursorAdapterConfig,
   ): Promise<ActiveBridge> {
     const privateRoot = await mkdtemp(join(tmpdir(), 'dsh-cursor-provider-'))
+    // The mkdtemp await can outlive the adapter or caller; fail closed before
+    // any spawn side effect and drop the fresh private root.
+    try {
+      this.assertRunLive(options)
+    } catch (error: unknown) {
+      await rm(privateRoot, { recursive: true, force: true })
+      throw error
+    }
     const abort = new AbortController()
     const process = this.ctx.subprocess.spawn({
       argv: [config.bridgeCommand, ...config.bridgeArgs, 'model', '--config', model.configPath],

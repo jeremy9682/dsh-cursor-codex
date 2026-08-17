@@ -1,3 +1,6 @@
+import { mkdtemp, readdir, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
@@ -354,5 +357,68 @@ describe('Cursor ACP deferred catalog refresh races', () => {
     await expect(pending).rejects.toMatchObject({ code: 'ABORTED', message: 'Cursor request aborted' })
     expect(liveBridges(adapter)).toBe(0)
     await adapter.dispose()
+  })
+})
+
+describe('Cursor ACP startBridge lifecycle races', () => {
+  function countSpawns(ctx: Context): () => number {
+    const service = (ctx as unknown as { subprocess: { spawn: (...args: never[]) => unknown } }).subprocess
+    const realSpawn = service.spawn.bind(service)
+    let spawnCount = 0
+    service.spawn = (...args: never[]) => {
+      spawnCount += 1
+      return realSpawn(...args)
+    }
+    return () => spawnCount
+  }
+
+  /** Give the adapter's mkdtemp an otherwise-empty tmpdir so leftovers are attributable. */
+  async function withIsolatedTmpdir(run: (root: string) => Promise<void>): Promise<void> {
+    const previous = process.env.TMPDIR
+    const root = await mkdtemp(join(tmpdir(), 'dsh-cursor-gap-spec-'))
+    process.env.TMPDIR = root
+    try {
+      await run(root)
+    } finally {
+      if (previous === undefined) delete process.env.TMPDIR
+      else process.env.TMPDIR = previous
+      await rm(root, { recursive: true, force: true })
+    }
+  }
+
+  async function leftoverBridgeRoots(root: string): Promise<readonly string[]> {
+    const entries = await readdir(root)
+    return entries.filter(name => name.startsWith('dsh-cursor-provider-'))
+  }
+
+  it('fails without spawning when disposal lands during the startBridge mkdtemp await', async () => {
+    await withIsolatedTmpdir(async root => {
+      let adapter: CursorAcpAdapter | undefined
+      const { ctx, adapter: created } = await harness(() => {
+        queueMicrotask(() => { void adapter?.dispose() })
+        return config
+      })
+      adapter = created
+      const spawnCount = countSpawns(ctx)
+      await expect(collect(adapter, baseOptions())).rejects.toMatchObject({ code: 'TRANSPORT', message: 'Cursor ACP adapter is disposing' })
+      expect(spawnCount()).toBe(0)
+      expect(liveBridges(adapter)).toBe(0)
+      expect(await leftoverBridgeRoots(root)).toEqual([])
+    })
+  })
+
+  it('fails without spawning when the caller aborts during the startBridge mkdtemp await', async () => {
+    await withIsolatedTmpdir(async root => {
+      const controller = new AbortController()
+      const { ctx, adapter } = await harness(() => {
+        queueMicrotask(() => { controller.abort(new Error('caller cancelled')) })
+        return config
+      })
+      const spawnCount = countSpawns(ctx)
+      await expect(collect(adapter, { ...baseOptions(), signal: controller.signal })).rejects.toMatchObject({ code: 'ABORTED', message: 'Cursor request aborted' })
+      expect(spawnCount()).toBe(0)
+      expect(liveBridges(adapter)).toBe(0)
+      expect(await leftoverBridgeRoots(root)).toEqual([])
+    })
   })
 })
