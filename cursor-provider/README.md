@@ -49,6 +49,9 @@ If `cursor-agent` is not on PATH, configure its absolute official launcher path 
 ## Tool governance
 
 - Direct, title, and compaction calls are text-only.
+- Text-only calls use Cursor Ask mode. DSH Agent Loop calls that expose
+  scheduler tools use Cursor Agent mode so the model can keep selecting the
+  package-owned MCP bridge across tool steps.
 - DSH tools are exposed to Cursor only during a DSH Agent Loop request.
 - Cursor MCP `tools/call` becomes a standard DSH `tool-call`; DSH owns approval, execution, persistence, and logging.
 - The matching DSH `tool-result` resumes the same live Cursor ACP prompt.
