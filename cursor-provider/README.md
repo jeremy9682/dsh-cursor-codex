@@ -76,7 +76,7 @@ pnpm build
 DSH_CURSOR_E2E=1 pnpm --filter @jeremy9682/dsh-llm-cursor-acp test:e2e
 ```
 
-The opt-in real suite uses the current Cursor subscription without separate API keys. It verifies native text streaming, a complete DSH Scheduler MCP round trip, Read/WebFetch cancellation, host-home Write denial, and Shell process-exec denial.
+The opt-in real suite uses the current Cursor subscription without separate API keys. It verifies native text streaming, a complete DSH Scheduler MCP round trip, Agent-mode built-in Read/Write/Shell/WebFetch/Find denial, and physical Seatbelt host-home Write plus process-exec checks.
 
 The provider pauses its own prompt deadline while a Cursor MCP call is suspended for DSH tool execution, and Agent Virtualization does not add a competing wall-clock deadline. Cursor's HTTP MCP client still has its own implementation limit (observed as `MCP error -32001: Request timed out`, roughly one minute in the admitted build); individual DSH tools must complete within that limit or Cursor receives the MCP timeout as a tool error.
 
