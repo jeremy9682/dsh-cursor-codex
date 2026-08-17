@@ -52,7 +52,7 @@ function waitForIdle(context: Context, agent: Agent): Promise<void> {
   })
 }
 
-async function realAgentLoopHarness(): Promise<Context> {
+async function realAgentLoopHarness(promptTimeoutMs: number = 180_000): Promise<Context> {
   const context = new Context()
   ctx = context
   await context.plugin(LlmRuntime)
@@ -65,7 +65,7 @@ async function realAgentLoopHarness(): Promise<Context> {
   await context.plugin(CursorProvider, {
     command: process.env.DSH_CURSOR_COMMAND ?? '/Users/zihan/.local/bin/cursor-agent',
     defaultModel: 'cursor-grok-4.6-high',
-    promptTimeoutMs: 180_000,
+    promptTimeoutMs,
   })
   return context
 }
@@ -124,5 +124,47 @@ describe.skipIf(!enabled)('real keyless Cursor ACP provider', () => {
     const final = agent.session.deriveMessages().at(-1)
     expect(final?.role).toBe('assistant')
     expect(final?.content).toContainEqual({ type: 'text', text: 'scheduled-by-dsh:roundtrip-ok' })
+  })
+
+  it('does not time out while a suspended MCP call waits for the DSH scheduler', { timeout: 300_000 }, async () => {
+    // Regression: the prompt deadline used to run through the suspension
+    // (Cursor waiting on the DSH tool result), so any tool slower than
+    // promptTimeoutMs killed the whole turn with CURSOR_TIMEOUT. The deadline
+    // must only cover active generation segments.
+    root = await mkdtemp(join(tmpdir(), 'cursor-real-timeout-e2e-'))
+    const context = await realAgentLoopHarness(50_000)
+    context.tools.register(defineContentToolFixture({
+      name: 'cursor_scheduler_slow_echo',
+      description: 'Sleep, then return the supplied marker through the DeepSeek Harness scheduler.',
+      parameters: { marker: { type: 'string', description: 'Exact marker to return.' } },
+      async execute(args) {
+        // Sleep longer than promptTimeoutMs: only a deadline that is
+        // suspended during the MCP wait can survive this. Stay under Cursor's
+        // own internal MCP client timeout (~60s, error -32001), which is a
+        // separate hard boundary documented in the README.
+        await new Promise(resolve => setTimeout(resolve, 30_000))
+        return Promise.resolve([{ type: 'text', text: `slow-tool-done:${String(args.marker)}` }])
+      },
+    }))
+    const agent = context.agentLoop.create(
+      SessionId('cursor-real-timeout-e2e'),
+      { provider: 'cursor-acp', model: 'cursor-grok-4.6-high' },
+      { cwd: root },
+    )
+    const idle = waitForIdle(context, agent)
+    agent.followup(createUserMessage({
+      content: [{
+        type: 'text',
+        text: 'Call the cursor_scheduler_slow_echo DSH tool exactly once with {"marker":"timeout-regression"}. Then reply with only the returned tool text.',
+      }],
+      source: { kind: 'user' },
+    }))
+    await idle
+    const final = agent.session.deriveMessages().at(-1)
+    const timeoutDiagnostics = agent.session.events
+      .filter(event => event.type === 'assistant/chunk' || event.type === 'turn/end')
+      .map(event => event.type === 'assistant/chunk' ? event.data.chunk : event.data?.reason ?? event.data)
+    expect(final?.role, JSON.stringify(timeoutDiagnostics)).toBe('assistant')
+    expect(final?.content).toContainEqual({ type: 'text', text: 'slow-tool-done:timeout-regression' })
   })
 })

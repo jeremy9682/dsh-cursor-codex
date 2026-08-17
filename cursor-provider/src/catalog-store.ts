@@ -221,7 +221,10 @@ export class CursorCatalogStore {
         workspace: { root: '.' },
         sandbox: { mode: 'read-only', network: 'inherit', requireEnforcement: false },
         homeMode: 'isolated',
-        timeoutMs: config.promptTimeoutMs + config.graceMs + 30_000,
+        // No Agent Virtualization wall-clock timeout: it would keep running
+        // while Cursor is suspended waiting for a DSH tool result. The runtime
+        // layer owns the deadline and only arms it during active generation
+        // segments; host disposal and input close cover the remaining cleanup.
         inheritEnv: ['PATH', 'LANG', 'LC_ALL', 'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY'],
       },
       sandboxProvider: {
