@@ -82,7 +82,7 @@ Catalog refresh occurs at startup, on Models-page discovery, after a configurabl
 ### Tool governance
 
 - Advertise no ACP client filesystem or terminal capabilities.
-- Force Cursor session mode `ask` and pass only the private loopback MCP server.
+- Select Cursor session mode from advertised DSH tools: nonempty/tool-bearing capabilities use `agent`; zero-tool/text-only calls use `ask`. Pass only the private loopback MCP server. Built-in Cursor tools remain independently denied.
 - Generate a random bearer token and randomized MCP server name per runtime. Bind only `127.0.0.1` and reject missing/wrong auth, wrong path, oversized bodies, invalid JSON-RPC, unknown methods, duplicate calls, and stale call ids.
 - Auto-allow ACP permission requests only when their exact title, kind, and location-free shape identifies the runtime's randomized MCP server and one advertised DSH tool. Permission precedes HTTP `tools/call`, so it is never treated as execution or as proof that a bridge call already exists. Deny every other permission request.
 - Treat ACP `tool_call` notifications only as telemetry. A non-DSH tool notification is a governance violation: cancel the prompt, discard subsequent content, tear down the process, and return `LlmError('POLICY_DENIED')`.
@@ -145,7 +145,7 @@ Opt-in test against the installed logged-in `cursor-agent`:
 1. refresh the live model catalog and select `cursor-grok-4.6-high`;
 2. stream a text-only turn through `ctx.llm`;
 3. run one MCP echo call through the full DSH Agent Loop and assert the DSH session log records call/result before the final text;
-4. run external canaries for built-in Read, Write, Shell, and WebFetch and assert no side effect or secret reaches the model output.
+4. run Agent-mode external canaries (one harmless nonempty DSH capability) for built-in Read, Write, Shell, WebFetch, and Find if Cursor emits a distinct Find request; assert `POLICY_DENIED`, no local side effect, and a zero-request WebFetch observer.
 
 ## Verification gates
 
