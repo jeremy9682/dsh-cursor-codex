@@ -77,7 +77,7 @@ At refresh time, start a short-lived isolated ACP process, call `initialize` and
 - Reject unknown DSH ids with `LlmError('UNKNOWN_MODEL')`.
 - Default to `cursor-grok-4.6-high`; fail visibly if the current account does not offer it rather than silently switching models.
 
-Catalog refresh occurs at startup, on Models-page discovery, after a configurable TTL, and on an explicit CLI refresh. A failed refresh keeps the last good catalog for current traffic while reporting health failure; a first refresh failure leaves the provider registered but with no selectable models.
+Catalog refresh occurs at startup, on Models-page discovery, after a configurable TTL, and on an explicit CLI refresh. A transient transport/timeout refresh failure keeps the last-good catalog for current traffic while reporting health failure: `stream()` proceeds only when the last-good catalog still offers the exact requested stable model. Every other refresh failure — authentication required, incompatible protocol or artifacts, sandbox, cache — plus a first refresh failure with no last-good catalog stays fatal, and a model absent from or tombstoned by the last-good catalog still fails the pre-run availability check.
 
 ### Tool governance
 

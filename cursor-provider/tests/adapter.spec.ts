@@ -45,11 +45,14 @@ afterEach(async () => {
   await Promise.all(contexts.splice(0).map(ctx => ctx.fiber.dispose()))
 })
 
-async function harness(): Promise<{ ctx: Context; adapter: CursorAcpAdapter }> {
+async function harness(
+  configGetter: () => CursorAdapterConfig = () => config,
+  refresh?: (force: boolean, signal?: AbortSignal, requireSuccess?: boolean) => Promise<void>,
+): Promise<{ ctx: Context; adapter: CursorAcpAdapter }> {
   const ctx = new Context()
   contexts.push(ctx)
   await ctx.plugin(LocalSubprocessRuntime)
-  const adapter = new CursorAcpAdapter(ctx, () => config)
+  const adapter = new CursorAcpAdapter(ctx, configGetter, refresh)
   return { ctx, adapter }
 }
 
@@ -212,5 +215,87 @@ describe('Cursor ACP DSH adapter', () => {
     expect(renderCursorTask(options, false)).toContain('This is a text-only call')
     expect(renderCursorTask(options, false)).toContain('USER id=')
     expect(renderCursorTask(options, true)).toContain('scheduled, approved, executed, and recorded')
+  })
+})
+
+describe('Cursor ACP catalog transient fallback', () => {
+  function transientRefresh(message: string): {
+    readonly calls: Array<{ force: boolean; signal?: AbortSignal | undefined; requireSuccess?: boolean | undefined }>
+    readonly refresh: (force: boolean, signal?: AbortSignal, requireSuccess?: boolean) => Promise<void>
+  } {
+    const calls: Array<{ force: boolean; signal?: AbortSignal | undefined; requireSuccess?: boolean | undefined }> = []
+    return {
+      calls,
+      refresh: async (force, signal, requireSuccess) => {
+        calls.push({ force, signal, requireSuccess })
+        throw new Error(message)
+      },
+    }
+  }
+
+  async function harnessWithRefresh(
+    message: string,
+    configGetter: () => CursorAdapterConfig = () => config,
+  ): Promise<{ calls: Array<{ force: boolean; signal?: AbortSignal | undefined; requireSuccess?: boolean | undefined }>; adapter: CursorAcpAdapter }> {
+    const { calls, refresh } = transientRefresh(message)
+    const { adapter } = await harness(configGetter, refresh)
+    return { calls, adapter }
+  }
+
+  it('proceeds to the bridge on transient refresh failures when last-good serves the exact model', async () => {
+    for (const message of ['CURSOR_TRANSPORT: catalog probe failed', 'CURSOR_TIMEOUT: catalog probe timed out']) {
+      const { calls, adapter } = await harnessWithRefresh(message)
+      const chunks = await collect(adapter, baseOptions())
+      expect(chunks.filter(chunk => chunk.type === 'text-delta').map(chunk => chunk.text).join('')).toContain('cursor-text')
+      expect(chunks.at(-1)).toEqual({ type: 'finish', reason: { kind: 'stop' } })
+      expect(calls).toEqual([{ force: true, signal: undefined, requireSuccess: true }])
+      await adapter.dispose()
+    }
+  })
+
+  it('fails a transient first refresh with no last-good catalog', async () => {
+    const { adapter } = await harnessWithRefresh('CURSOR_TRANSPORT: catalog probe failed', () => ({ ...config, models: [] }))
+    await expect(collect(adapter, baseOptions())).rejects.toThrow('CURSOR_TRANSPORT: catalog probe failed')
+    await adapter.dispose()
+  })
+
+  it('still fails auth, compatibility, cache, and sandbox refresh errors with last-good present', async () => {
+    for (const message of [
+      'CURSOR_AUTH_REQUIRED: Cursor login is required or expired',
+      'INCOMPATIBLE_CURSOR_ACP: catalog protocol failed',
+      'CURSOR_CACHE_INVALID: ignored invalid Cursor catalog cache',
+      'SANDBOX_UNAVAILABLE: Cursor catalog probe requires macOS Seatbelt',
+    ]) {
+      const { adapter } = await harnessWithRefresh(message)
+      await expect(collect(adapter, baseOptions())).rejects.toThrow(message)
+      await adapter.dispose()
+    }
+  })
+
+  it('fails transient-looking refresh failures caused by caller cancellation', async () => {
+    const controller = new AbortController()
+    const refresh = async (): Promise<void> => {
+      controller.abort(new Error('caller cancelled'))
+      throw new Error('CURSOR_TIMEOUT: catalog probe timed out')
+    }
+    const { adapter } = await harness(() => config, refresh)
+    await expect(collect(adapter, { ...baseOptions(), signal: controller.signal })).rejects.toThrow('CURSOR_TIMEOUT: catalog probe timed out')
+    await adapter.dispose()
+  })
+
+  it('fails an unknown model during a transient refresh', async () => {
+    const { adapter } = await harnessWithRefresh('CURSOR_TRANSPORT: catalog probe failed')
+    await expect(collect(adapter, { ...baseOptions(), model: 'cursor-mock-ghost' })).rejects.toThrow('CURSOR_TRANSPORT: catalog probe failed')
+    await adapter.dispose()
+  })
+
+  it('fails a tombstoned model during a transient refresh', async () => {
+    const removed = { ...config.models[0]!, id: 'cursor-old-high', name: 'Cursor Old High' }
+    const { adapter } = await harnessWithRefresh(
+      'CURSOR_TRANSPORT: catalog probe failed',
+      () => ({ ...config, models: [config.models[1]!], tombstones: [removed] }),
+    )
+    await expect(collect(adapter, { ...baseOptions(), model: 'cursor-old-high' })).rejects.toThrow('CURSOR_TRANSPORT: catalog probe failed')
+    await adapter.dispose()
   })
 })

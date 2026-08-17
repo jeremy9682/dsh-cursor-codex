@@ -42,7 +42,7 @@ dsh plugin --profile web exec dsh-cursor-provider models --refresh
 dsh plugin --profile web exec dsh-cursor-provider doctor --json
 ```
 
-Health output contains only the CLI path/version, verified/required/unknown authentication state, sandbox/artifact compatibility, default availability, stable model IDs, and model names. It excludes credentials and account identity. Cached models remain advisory when health is unknown; starting a prompt always requires a successful live probe.
+Health output contains only the CLI path/version, verified/required/unknown authentication state, sandbox/artifact compatibility, default availability, stable model IDs, and model names. It excludes credentials and account identity. Every prompt forces a live catalog probe; only a transient transport/timeout failure may proceed on the last-good catalog entry for the exact selected model, while authentication, compatibility, cache, and sandbox failures — or a model the last-good catalog no longer offers — fail the prompt.
 
 If `cursor-agent` is not on PATH, configure its absolute official launcher path in the provider settings or pass `--command PATH` to the health CLI.
 

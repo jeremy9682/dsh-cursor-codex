@@ -101,6 +101,16 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
+const TRANSIENT_CATALOG_ERROR = /^CURSOR_(TRANSPORT|TIMEOUT):/u
+
+/**
+ * A catalog error a last-good snapshot can ride out. Auth, compatibility,
+ * cache, and sandbox failures stay fatal regardless of cached state.
+ */
+function isTransientCatalogError(error: unknown): boolean {
+  return error instanceof Error && TRANSIENT_CATALOG_ERROR.test(error.message)
+}
+
 function runtimeLlmError(message: string): LlmError {
   const code = /^([A-Z][A-Z0-9_]+):/u.exec(message)?.[1]
   return new LlmError(message, code ?? 'PROVIDER')
@@ -152,7 +162,7 @@ export class CursorAcpAdapter extends LlmAdapter {
   override async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
     if (this.disposing) throw new LlmError('Cursor ACP adapter is disposing', 'TRANSPORT')
     if (options.provider !== CURSOR_ACP_PROVIDER) throw new LlmError(`unexpected provider ${JSON.stringify(options.provider)}`, 'PROVIDER')
-    await this.refresh?.(true, options.signal, true)
+    await this.refreshCatalogForRun(options)
     let config = this.config()
     let model = this.resolveConfiguredModel(options.model, config)
     if (!config.models.some(candidate => candidate.id === model.id)) {
@@ -345,6 +355,28 @@ export class CursorAcpAdapter extends LlmAdapter {
     await Promise.all([...this.active.entries()]
       .filter(([key]) => key.startsWith(prefix))
       .map(([, bridge]) => this.closeBridge(bridge, 'DSH session disposed')))
+  }
+
+  /**
+   * Forced pre-run catalog refresh. A transient transport or timeout failure
+   * falls back to the last-good catalog only when it still offers the exact
+   * requested stable model; every other failure, an aborted caller, a disposed
+   * adapter, and any model outside the current catalog stay fatal.
+   */
+  private async refreshCatalogForRun(options: GenerateOptions): Promise<void> {
+    try {
+      await this.refresh?.(true, options.signal, true)
+    } catch (error: unknown) {
+      if (this.disposing || options.signal?.aborted === true || !isTransientCatalogError(error)) throw error
+      const config = this.config()
+      let model: CursorRuntimeModel
+      try {
+        model = this.resolveConfiguredModel(options.model, config)
+      } catch {
+        throw error
+      }
+      if (!config.models.some(candidate => candidate.id === model.id)) throw error
+    }
   }
 
   private resolveConfiguredModel(modelId: string, config = this.config()): CursorRuntimeModel {
