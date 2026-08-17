@@ -45,6 +45,9 @@ function spawnSyncProbe(args) {
 
 const dsh = findDsh();
 
+/** How long to wait after SIGTERM before escalating to SIGKILL. */
+const GRACE_AFTER_SIGTERM_MS = 30 * 1000;
+
 /** Run one dsh headless task; resolve { ok, text, code, timedOut }. */
 function runHeadless(task, cwd, timeoutMs) {
   return new Promise((resolve) => {
@@ -55,38 +58,64 @@ function runHeadless(task, cwd, timeoutMs) {
     let stdout = "";
     let stderr = "";
     let settled = false;
-    const timer = setTimeout(() => {
+    let timedOut = false;
+    let timer = null;
+    let killTimer = null;
+    const settle = (value) => {
       if (settled) return;
       settled = true;
-      child.kill("SIGKILL");
-      resolve({
-        ok: false,
-        code: null,
-        timedOut: true,
-        text: `dsh task timed out after ${timeoutMs} ms. Partial output:\n${stdout.slice(-4000)}`,
-      });
+      clearTimeout(timer);
+      clearTimeout(killTimer);
+      resolve(value);
+    };
+    timer = setTimeout(() => {
+      if (settled) return;
+      timedOut = true;
+      // Graceful first: SIGTERM lets the dsh headless runner cancel the
+      // in-flight turn and flush a terminal turn/end event, so the session
+      // is not left looking stuck mid-stream. SIGKILL only as a last resort
+      // after the grace window.
+      log(`task timed out after ${timeoutMs} ms; sending SIGTERM to pid ${child.pid}, escalating to SIGKILL after ${GRACE_AFTER_SIGTERM_MS} ms`);
+      try {
+        child.kill("SIGTERM");
+      } catch (error) {
+        log(`SIGTERM to pid ${child.pid} failed: ${error.message}`);
+      }
+      killTimer = setTimeout(() => {
+        if (settled) return;
+        try {
+          child.kill("SIGKILL");
+        } catch (error) {
+          log(`SIGKILL to pid ${child.pid} failed: ${error.message}`);
+        }
+      }, GRACE_AFTER_SIGTERM_MS);
     }, timeoutMs);
     child.stdout.on("data", (chunk) => (stdout += chunk.toString()));
     child.stderr.on("data", (chunk) => (stderr += chunk.toString()));
     child.on("error", (error) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve({ ok: false, code: null, timedOut: false, text: `failed to start dsh: ${error.message}` });
+      settle({ ok: false, code: null, timedOut: false, text: `failed to start dsh: ${error.message}` });
     });
     child.on("close", (code) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
       const answer = stdout.trim();
-      if (code === 0 && answer.length > 0) resolve({ ok: true, code, timedOut: false, text: answer });
-      else
-        resolve({
+      if (timedOut) {
+        // SIGTERM/SIGKILL path: report the deadline and include whatever the
+        // runner managed to emit before termination.
+        settle({
+          ok: false,
+          code,
+          timedOut: true,
+          text: `dsh task timed out after ${timeoutMs} ms. Partial output:\n${stdout.slice(-4000)}`,
+        });
+      } else if (code === 0 && answer.length > 0) {
+        settle({ ok: true, code, timedOut: false, text: answer });
+      } else {
+        settle({
           ok: false,
           code,
           timedOut: false,
           text: `dsh exited with code ${code}. stderr tail:\n${stderr.slice(-4000)}\nstdout tail:\n${stdout.slice(-2000)}`,
         });
+      }
     });
   });
 }
