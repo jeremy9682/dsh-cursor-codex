@@ -6,13 +6,15 @@
 
 在 [Agent Client Protocol](https://agentclientprotocol.com) 生态里，Cursor 与 Codex 目前都是 **ACP agent（被调用方）**，官方都不支持作为客户端加载第三方 ACP agent。因此：
 
-| 通道 | Cursor | Codex CLI | Zed / JetBrains 等 ACP 客户端 |
-|---|---|---|---|
-| ACP 服务（`dsh --profile acp`） | ✗ 不是 ACP 客户端 | ✗ 不是 ACP 客户端 | ✓ 原生 |
-| MCP 服务（`dsh_delegate`） | ✓ 原生（`mcp.json`） | ✓ 原生（`[mcp_servers]` / 插件） | ✓（MCP） |
-| headless CLI（`dsh --profile headless`） | ✓ 通过 shell / 自定义 subagent | ✓ 通过 `codex exec` | ✓ |
+| 通道 | Cursor | Codex CLI | ZCode | Zed / JetBrains 等 ACP 客户端 |
+|---|---|---|---|---|
+| ACP 服务（`dsh --profile acp`） | ✗ 不是 ACP 客户端 | ✗ 不是 ACP 客户端 | ✗ 不是 ACP 客户端 | ✓ 原生 |
+| MCP 服务（`dsh_delegate`） | ✓ 原生（`mcp.json`） | ✓ 原生（`[mcp_servers]` / 插件） | ✓ 原生（`.zcode/cli/config.json` 的 `mcp.servers`） | ✓（MCP） |
+| headless CLI（`dsh --profile headless`） | ✓ 通过 shell / 自定义 subagent | ✓ 通过 `codex exec` | ✓ 通过 shell / `gateway/local-gateway.mjs` | ✓ |
+| `agent-run`（ADV canon） | ✓ 通过 shell | ✓ 通过 shell | ✓ 通过 shell / gateway `--via agent-run` | ✓ |
+| `cursor-agent acp` | n/a（它自己就是 agent） | ✗ | ✓ 通过 gateway `--via cursor-acp` | ✓ 当作自定义 agent spawn |
 
-对 Cursor 和 Codex 而言，现实答案是 **MCP 或 headless CLI**；对 Zed/JetBrains，ACP profile 是最干净的答案。
+对 Cursor、Codex 和 ZCode 而言，现实答案是 **MCP 或 headless/gateway CLI**；对 Zed/JetBrains，ACP profile 是最干净的答案。Cursor Cloud 不是一列：没有本机 HTTP/ACP 插座。见 [`docs/zcode-cloud-gateway.zh.md`](zcode-cloud-gateway.zh.md)。
 
 ## 前置条件
 
@@ -69,7 +71,9 @@ codex -p dsh "你的任务"        # -p 与 config.toml 叠加生效
 codex exec -p dsh "你的任务"
 ```
 
-`dsh_delegate` 每次执行一个 headless 任务并返回最终回答。随附的 skills（[`skills/`](../skills/)）教两个客户端"何时派活、怎么派"。
+`dsh_delegate` 每次执行一个 headless 任务并返回最终回答。随附的 skills（[`skills/`](../skills/)）教各个客户端「何时派活、怎么派」。
+
+ZCode —— 把 [`templates/zcode/config.snippet.json`](../templates/zcode/config.snippet.json) 合并进 `~/.zcode/cli/config.json`（用户级）或 `<repo>/.zcode/config.json`（工作区）。也可以从 Cursor 的 MCP 配置导入。薄 CLI 是 [`gateway/local-gateway.mjs`](../gateway/local-gateway.mjs)；`--via cloud` 会失败关闭。
 
 ## 通道三 — headless CLI（任何能跑 shell 的地方）
 

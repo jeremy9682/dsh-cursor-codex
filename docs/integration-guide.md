@@ -6,13 +6,15 @@ This kit connects [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-har
 
 In the [Agent Client Protocol](https://agentclientprotocol.com) ecosystem, Cursor and Codex are currently **ACP agents (servers)**, not ACP clients. Neither has an official way to load a third-party ACP agent. So:
 
-| Channel | Cursor | Codex CLI | Zed / JetBrains / other ACP clients |
-|---|---|---|---|
-| ACP server (`dsh --profile acp`) | ✗ not an ACP client | ✗ not an ACP client | ✓ native |
-| MCP server (`dsh_delegate`) | ✓ native (`mcp.json`) | ✓ native (`[mcp_servers]` / plugins) | ✓ (MCP) |
-| headless CLI (`dsh --profile headless`) | ✓ via shell / custom subagent | ✓ via `codex exec` | ✓ |
+| Channel | Cursor | Codex CLI | ZCode | Zed / JetBrains / other ACP clients |
+|---|---|---|---|---|
+| ACP server (`dsh --profile acp`) | ✗ not an ACP client | ✗ not an ACP client | ✗ not an ACP client | ✓ native |
+| MCP server (`dsh_delegate`) | ✓ native (`mcp.json`) | ✓ native (`[mcp_servers]` / plugins) | ✓ native (`mcp.servers` in `.zcode/cli/config.json`) | ✓ (MCP) |
+| headless CLI (`dsh --profile headless`) | ✓ via shell / custom subagent | ✓ via `codex exec` | ✓ via shell / `gateway/local-gateway.mjs` | ✓ |
+| `agent-run` (ADV canon) | ✓ via shell | ✓ via shell | ✓ via shell / gateway `--via agent-run` | ✓ |
+| `cursor-agent acp` | n/a (it *is* the agent) | ✗ | ✓ via gateway `--via cursor-acp` | ✓ spawn as custom agent |
 
-For Cursor and Codex the practical answer is **MCP or the headless CLI**. For Zed/JetBrains the ACP profile is the clean answer.
+For Cursor, Codex, and ZCode the practical answer is **MCP or the headless/gateway CLI**. For Zed/JetBrains the ACP profile is the clean answer. Cursor Cloud is not a column: it has no local HTTP/ACP socket. See [`docs/zcode-cloud-gateway.md`](zcode-cloud-gateway.md).
 
 ## Prerequisites
 
@@ -70,6 +72,8 @@ codex exec -p dsh "your task"
 ```
 
 The `dsh_delegate` tool runs one headless task and returns the committed final answer. The bundled skills ([`skills/`](../skills/)) teach each agent when and how to delegate.
+
+ZCode — merge [`templates/zcode/config.snippet.json`](../templates/zcode/config.snippet.json) into `~/.zcode/cli/config.json` (user) or `<repo>/.zcode/config.json` (workspace). ZCode can also Import the Cursor MCP server. The thin CLI is [`gateway/local-gateway.mjs`](../gateway/local-gateway.mjs); `--via cloud` fails closed.
 
 ## Channel 3 — headless CLI (anywhere a shell runs)
 
