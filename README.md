@@ -42,6 +42,10 @@ Cursor and Codex are ACP *agents*, not ACP clients — neither can load a third-
 - ACP profile: `initialize` → `session/new` → `session/prompt` → streamed answer → `end_turn` (tested against dsh 0.1.0-rc.6).
 - MCP server: `initialize` → `tools/list` → `dsh_health` → `dsh_delegate` real task (tested against dsh 0.1.0-rc.6).
 
+## Safe DSH upgrades for Cursor ACP
+
+The Cursor provider includes `dsh-cursor-upgrade-gate`. It stages a requested DSH package away from the active installation, probes the cross-provider replay-filter behavior, applies the narrow compatibility patch only when the behavior is still broken, and requires an external Cursor smoke before an atomic `current`-symlink promotion. See [`cursor-provider/README.md`](cursor-provider/README.md#dsh-upgrades). Direct global reinstall is intentionally outside this path because it can erase a local compatibility fix before validation.
+
 ## License
 
 [MIT](LICENSE)

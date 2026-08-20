@@ -31,11 +31,22 @@ describe('Agent Virtualization model-provider protocol', () => {
     await expect(oversizedMailbox.next()).rejects.toThrow(/exceeds 8 bytes/u)
   })
 
-  it('fails closed when many small valid frames exhaust the queue', async () => {
+  it('pauses and resumes across stream chunks larger than the message high-water mark', async () => {
     const input = new PassThrough()
-    const mailbox = new ModelProviderMailbox(input, 1024)
+    const mailbox = new ModelProviderMailbox(input, 64 * 1024)
     const event = line({ protocol: MODEL_PROVIDER_PROTOCOL, type: 'model.event', requestId: 'r', event: { type: 'message.delta', message: 'x' } })
-    input.write(event.repeat(257))
+    input.write(event.repeat(300) + event.slice(0, 5))
+    input.write(event.slice(5) + event.repeat(299))
+    for (let index = 0; index < 600; index += 1) {
+      await expect(mailbox.next()).resolves.toMatchObject({ type: 'model.event' })
+    }
+  })
+
+  it('fails closed when queued and unparsed protocol bytes exceed the byte cap', async () => {
+    const input = new PassThrough()
+    const mailbox = new ModelProviderMailbox(input, 256)
+    const event = line({ protocol: MODEL_PROVIDER_PROTOCOL, type: 'model.event', requestId: 'r', event: { type: 'message.delta', message: 'x'.repeat(80) } })
+    input.write(event.repeat(32))
     await expect(mailbox.next()).rejects.toThrow(/queue exceeds bounded capacity/u)
   })
 

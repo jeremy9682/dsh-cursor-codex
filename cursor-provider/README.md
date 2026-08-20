@@ -25,7 +25,7 @@ pnpm --filter @jeremy9682/dsh-llm-cursor-acp pack
 Install the resulting archive into the Web profile:
 
 ```bash
-dsh plugin --profile web add /absolute/path/to/jeremy9682-dsh-llm-cursor-acp-0.1.0.tgz
+dsh plugin --profile web add /absolute/path/to/jeremy9682-dsh-llm-cursor-acp-0.1.1.tgz
 ```
 
 Restart the existing `dsh web` process using the same command or service definition that originally launched it. Do not start a second server on the same port.
@@ -44,6 +44,16 @@ dsh plugin --profile web exec dsh-cursor-provider doctor --json
 
 Health output contains only the CLI path/version, verified/required/unknown authentication state, sandbox/artifact compatibility, default availability, stable model IDs, and model names. It excludes credentials and account identity. Every prompt forces a live catalog probe; only a transient transport/timeout failure may proceed on the last-good catalog entry for the exact selected model, while authentication, compatibility, cache, and sandbox failures — or a model the last-good catalog no longer offers — fail the prompt.
 
+For a real cross-provider regression smoke against a running Web host:
+
+```bash
+dsh-cursor-live-smoke \
+  --base-url http://127.0.0.1:3080 \
+  --cursor-model cursor-grok-4.6-high # choose an id from the live catalog
+```
+
+The smoke creates a temporary nonce-bearing fixture and one isolated session, completes a first turn through another configured provider, switches that same session to Cursor, correlates the Cursor turn's `run_code` call with its scheduler-backed DSH `bash`/`rg` result, and rejects the known replay, policy, catalog-timeout, and raw-output-cap diagnostics. The fixture is removed afterward.
+
 If `cursor-agent` is not on PATH, configure its absolute official launcher path in the provider settings or pass `--command PATH` to the health CLI.
 
 ## Tool governance
@@ -60,7 +70,7 @@ If `cursor-agent` is not on PATH, configure its absolute official launcher path 
 - Unexpected Cursor built-in tool notifications cancel the ACP session with `POLICY_DENIED`.
 - The inner macOS sandbox denies file-data reads and writes by default. It admits only system/runtime reads, the isolated run state, Cursor's required temporary lock state, and Keychain access; process execution is limited to the verified Cursor installation, `/usr/bin/security`, and `/usr/bin/git`.
 - The Cursor child receives an environment allowlist rather than the host process environment.
-- ACP stdio uses strict bounded UTF-8/JSON framing and never logs malformed raw protocol lines. Cordis Fiber disposal owns catalog probes, active prompts, suspended MCP calls, process exit, and private-state removal.
+- ACP stdio uses strict bounded UTF-8/JSON framing and never logs malformed raw protocol lines. Its mailbox applies stream backpressure at the message high-water mark and resumes below a lower threshold, while retaining a hard byte cap for malformed or non-draining peers. Cordis Fiber disposal owns catalog probes, active prompts, suspended MCP calls, process exit, and private-state removal.
 - An adversarial WebFetch canary uses an external request observer and must show no request before exact Cursor artifacts are allowlisted.
 
 Agent Virtualization's outer sandbox is explicitly a no-op for this runtime because macOS forbids nested `sandbox-exec`. The package-owned inner sandbox is mandatory and starts before Cursor ACP.
@@ -83,6 +93,53 @@ The provider pauses its own prompt deadline while a Cursor MCP call is suspended
 ## Upgrade and rollback
 
 Before accepting a new Cursor Agent build, run the complete real E2E suite and add its launcher, bundled Node, and `index.js` SHA-256 values to `VERIFIED_CURSOR_ARTIFACTS` only after all bypass canaries pass.
+
+### DSH upgrades
+
+Do not overwrite a working global DSH installation first. The package ships a version-independent gate that installs or inspects a candidate in an isolated directory and executes the replay-filter behavior that Cursor depends on. It never decides from a hard-coded DSH version:
+
+```bash
+dsh-cursor-upgrade-gate prepare \
+  --active-root /absolute/path/to/current/@deepseek-ai/dsh \
+  --spec @deepseek-ai/dsh@next
+```
+
+The gate rejects downgrades, refuses top-level or nested-symlink access to the active root, installs with lifecycle scripts disabled by default, and fails closed if the candidate's bundle shape has drifted. Use `--allow-install-scripts` only after explicitly auditing a release that requires lifecycle scripts. If the candidate already preserves the DSH agent-loop marker, it remains untouched. If the known vulnerable replay-filter return is present, only the staged candidate is patched and then probed again. The resulting `gate.json` records a digest of the complete candidate tree and has status `ready-for-cursor-smoke`; that status is not permission to restart yet.
+
+Run a repository-specific executable smoke script that exercises Cursor catalog discovery and one real DSH-scheduled Cursor tool round trip, then promote the validated directory through a stable symlink:
+
+```bash
+# Build a disposable Web home. Its Cursor plugin imports the candidate's
+# dsh-llm instance; pointing it at the active instance would invalidate the
+# process-local agent-loop marker test.
+dsh-cursor-prepare-rehearsal \
+  --candidate-root /absolute/path/to/staged/@deepseek-ai/dsh \
+  --rehearsal-home "$HOME/.dsh/rehearsals/candidate-001" \
+  --cursor-plugin-root /absolute/path/to/dsh-llm-cursor-acp \
+  --credentials-file /absolute/path/to/a/least-privilege-candidate-credentials.yaml
+
+# Start the printed command on a disposable port, then run promotion.
+export DSH_CANDIDATE_BASE_URL=http://127.0.0.1:3081
+export DSH_CURSOR_MODEL=cursor-grok-4.6-high # choose an id from this candidate's live catalog
+dsh-cursor-upgrade-gate promote \
+  --candidate-root /absolute/path/to/staged/@deepseek-ai/dsh \
+  --active-link "$HOME/.dsh/current" \
+  --manifest /absolute/path/to/gate.json \
+  --smoke-script /path/to/cursor-provider/scripts/candidate-cursor-smoke.sh
+```
+
+Start the candidate itself on the disposable URL after `gate.json` is created and before promotion. Choose `DSH_CURSOR_MODEL` from that candidate's live Cursor catalog; the gate never assumes one model id exists forever. The supplied smoke normalizes loopback aliases, rejects the active port, verifies that the sole listener process is running the candidate entrypoint and was started after the manifest, reruns the replay probe, completes a first-provider turn, switches the same session to Cursor, and requires the correlated nonce-bearing DSH tool result. Promotion rejects every release symlink that escapes the candidate tree, verifies the complete tree before and after smoke, and uses one gate-owned lock plus repeated expected-current guards. All writers of `$HOME/.dsh/current` must use this gate; this is a cooperative single-writer contract, not an operating-system compare-and-swap primitive. The rollback receipt is written before the atomic link rename, and the result reports `restartRequired: true`. Promotion does not stop or restart DSH. The service definition should launch `$HOME/.dsh/current/lib/bin.js`. Keep the `previousTarget` from `promotion.json`; rollback uses the same lock and expected-current guard:
+
+The helper copies the source Web profile and settings into the mode-restricted rehearsal home. It does **not** copy credentials by default; `--credentials-file` is an explicit opt-in and should point to the least-privilege credentials needed for the disposable smoke. Stop the disposable host and delete that whole rehearsal home after the gate; do not retain or commit it.
+
+```bash
+dsh-cursor-upgrade-gate rollback \
+  --active-link "$HOME/.dsh/current" \
+  --expected-current /absolute/path/to/the/failed/candidate \
+  --target /absolute/path/from/previousTarget
+```
+
+This keeps the hotfix conditional: a future DSH release that contains the upstream behavior needs no local patch, while an incompatible release cannot replace the last green runtime.
 
 Rollback to a previous package archive:
 
