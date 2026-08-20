@@ -42,6 +42,10 @@ Cursor 与 Codex 在 ACP 生态里是 agent 而非客户端——两者目前都
 - ACP profile：`initialize` → `session/new` → `session/prompt` → 流式回答 → `end_turn`（dsh 0.1.0-rc.6 实测通过）。
 - MCP 服务：`initialize` → `tools/list` → `dsh_health` → `dsh_delegate` 真实任务（dsh 0.1.0-rc.6 实测通过）。
 
+## Cursor ACP 的安全 DSH 升级
+
+Cursor provider 现在附带 `dsh-cursor-upgrade-gate`。它先把指定的 DSH 包装进独立候选目录，再用真实行为探针检查跨 provider replay 过滤是否仍保留 agent-loop 标记；只有行为仍有缺陷且代码形状精确匹配时，才补候选目录。候选还必须通过外部 Cursor smoke，之后才能原子切换 `current` 软链接。完整命令与回滚方法见 [`cursor-provider/README.md`](cursor-provider/README.md#dsh-upgrades)。不要先全局覆盖正在工作的 DSH，否则会在验证前擦掉兼容性修复。
+
 ## License
 
 [MIT](LICENSE)

@@ -1,6 +1,6 @@
 {
   "name": "@jeremy9682/dsh-llm-cursor-acp",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Cursor ACP native model provider for DeepSeek Harness",
   "license": "MIT",
   "type": "module",
@@ -24,19 +24,30 @@
   },
   "bin": {
     "dsh-cursor-provider": "dist/cli.js",
-    "dsh-cursor-acp-runtime": "dist/runtime-bin.js"
+    "dsh-cursor-acp-runtime": "dist/runtime-bin.js",
+    "dsh-cursor-upgrade-gate": "scripts/dsh-upgrade-gate.mjs",
+    "dsh-cursor-live-smoke": "scripts/live-dsh-cursor-smoke.mjs",
+    "dsh-cursor-prepare-rehearsal": "scripts/prepare-dsh-candidate-rehearsal.mjs"
   },
   "files": [
     "dist",
+    "scripts/dsh-upgrade-gate.mjs",
+    "scripts/dsh-upgrade-gate-lib.mjs",
+    "scripts/candidate-dsh-smoke.mjs",
+    "scripts/candidate-cursor-smoke.sh",
+    "scripts/live-dsh-cursor-smoke.mjs",
+    "scripts/prepare-dsh-candidate-rehearsal.mjs",
+    "scripts/probe-dsh-agent-loop-marker.mjs",
     "cordis.patch.yml",
     "README.md",
     "THIRD_PARTY_NOTICES.md",
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.build.json && tsdown --config tsdown.client.config.mjs && chmod +x dist/cli.js dist/runtime-bin.js",
+    "build": "tsc -p tsconfig.build.json && tsdown --config tsdown.client.config.mjs && chmod +x dist/cli.js dist/runtime-bin.js scripts/dsh-upgrade-gate.mjs scripts/probe-dsh-agent-loop-marker.mjs scripts/live-dsh-cursor-smoke.mjs scripts/prepare-dsh-candidate-rehearsal.mjs scripts/candidate-dsh-smoke.mjs scripts/candidate-cursor-smoke.sh",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.client.json --noEmit",
-    "test": "vitest run --exclude 'tests/*.e2e.spec.ts'",
+    "test": "vitest run --exclude 'tests/*.e2e.spec.ts' --exclude 'scripts/*.test.mjs' && pnpm run test:upgrade-gate",
+    "test:upgrade-gate": "node --test scripts/dsh-upgrade-gate.test.mjs",
     "test:e2e": "vitest run tests/*.e2e.spec.ts",
     "check": "pnpm run typecheck && pnpm run test && pnpm run build",
     "prepack": "pnpm run check"

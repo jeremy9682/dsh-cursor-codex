@@ -9,6 +9,10 @@ interface Waiter {
   readonly onAbort?: () => void
 }
 
+const MAX_QUEUED_VALUES = 256
+const RESUME_QUEUED_VALUES = 128
+const MAX_QUEUED_BYTES_MULTIPLIER = 8
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
@@ -55,8 +59,9 @@ export class ModelProviderMailbox {
   private queuedBytes = 0
   private readonly waiters: Waiter[] = []
   private closed: Error | undefined
+  private inputPaused = false
 
-  constructor(input: Readable, private readonly maxLineBytes: number) {
+  constructor(private readonly input: Readable, private readonly maxLineBytes: number) {
     if (!Number.isSafeInteger(maxLineBytes) || maxLineBytes <= 0) throw new Error('maxLineBytes must be positive')
     input.on('data', (chunk: Buffer | string) => { this.push(chunk) })
     input.on('error', (error: Error) => { this.fail(error) })
@@ -67,6 +72,7 @@ export class ModelProviderMailbox {
     const value = this.values.shift()
     if (value !== undefined) {
       this.queuedBytes -= Buffer.byteLength(JSON.stringify(value))
+      this.drainBufferedLines()
       return Promise.resolve(value)
     }
     if (this.closed !== undefined) return Promise.reject(this.closed)
@@ -86,6 +92,7 @@ export class ModelProviderMailbox {
       }
       waiter.signal?.addEventListener('abort', waiter.onAbort!, { once: true })
       this.waiters.push(waiter)
+      this.drainBufferedLines()
     })
   }
 
@@ -101,10 +108,27 @@ export class ModelProviderMailbox {
   private push(chunk: Buffer | string): void {
     if (this.closed !== undefined) return
     this.bytes = Buffer.concat([this.bytes, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)])
+    this.drainBufferedLines()
+  }
+
+  private drainBufferedLines(): void {
+    if (this.closed !== undefined) return
     let newline = this.bytes.indexOf(0x0a)
     while (newline >= 0) {
       if (newline > this.maxLineBytes) {
         this.fail(new Error(`Agent Virtualization protocol line exceeds ${String(this.maxLineBytes)} bytes`))
+        return
+      }
+      if (
+        newline > 0
+        && this.waiters.length === 0
+        && (this.values.length >= MAX_QUEUED_VALUES
+          || this.queuedBytes + newline > this.maxLineBytes * MAX_QUEUED_BYTES_MULTIPLIER)
+      ) {
+        this.pauseInput()
+        if (this.queuedBytes + this.bytes.byteLength > this.maxLineBytes * MAX_QUEUED_BYTES_MULTIPLIER) {
+          this.fail(new Error('Agent Virtualization protocol queue exceeds bounded capacity'))
+        }
         return
       }
       const line = this.bytes.subarray(0, newline).toString('utf8').replace(/\r$/u, '')
@@ -122,6 +146,26 @@ export class ModelProviderMailbox {
     }
     if (this.bytes.byteLength > this.maxLineBytes) {
       this.close(new Error(`Agent Virtualization protocol line exceeds ${String(this.maxLineBytes)} bytes`))
+      return
+    }
+    this.resumeInputIfDrained()
+  }
+
+  private pauseInput(): void {
+    if (this.inputPaused) return
+    this.inputPaused = true
+    this.input.pause()
+  }
+
+  private resumeInputIfDrained(): void {
+    if (!this.inputPaused) return
+    if (
+      this.bytes.indexOf(0x0a) < 0
+      && this.values.length < RESUME_QUEUED_VALUES
+      && this.queuedBytes < this.maxLineBytes * (MAX_QUEUED_BYTES_MULTIPLIER / 2)
+    ) {
+      this.inputPaused = false
+      this.input.resume()
     }
   }
 
@@ -135,7 +179,8 @@ export class ModelProviderMailbox {
     const waiter = this.waiters.shift()
     if (waiter === undefined) {
       const bytes = Buffer.byteLength(JSON.stringify(value))
-      if (this.values.length >= 256 || this.queuedBytes + bytes > this.maxLineBytes * 8) {
+      if (this.values.length >= MAX_QUEUED_VALUES
+        || this.queuedBytes + bytes > this.maxLineBytes * MAX_QUEUED_BYTES_MULTIPLIER) {
         this.fail(new Error('Agent Virtualization protocol queue exceeds bounded capacity'))
         return
       }
